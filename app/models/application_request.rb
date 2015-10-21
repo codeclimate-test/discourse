@@ -37,36 +37,6 @@ class ApplicationRequest < ActiveRecord::Base
   end
 
   def self.write_cache!(date=nil)
-    if date.nil?
-      write_cache!(Time.now.utc)
-      write_cache!(Time.now.utc.yesterday)
-      return
-    end
-
-    self.last_flush = Time.now.utc
-
-    date = date.to_date
-
-    # this may seem a bit fancy but in so it allows
-    # for concurrent calls without double counting
-    req_types.each do |req_type,_|
-      key = redis_key(req_type,date)
-      val = $redis.get(key).to_i
-
-      next if val == 0
-
-      new_val = $redis.incrby(key, -val).to_i
-
-      if new_val < 0
-        # undo and flush next time
-        $redis.incrby(key, val)
-        next
-      end
-
-      id = req_id(date,req_type)
-
-      where(id: id).update_all(["count = count + ?", val])
-    end
   end
 
   def self.clear_cache!(date=nil)
@@ -81,8 +51,6 @@ class ApplicationRequest < ActiveRecord::Base
       $redis.del key
     end
   end
-
-  protected
 
   def self.req_id(date,req_type,retries=0)
 
