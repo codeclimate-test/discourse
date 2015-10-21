@@ -2,22 +2,52 @@ require 'spec_helper'
 
 describe AdminDashboardData do
 
+  describe "adding new checks" do
+    after do
+      AdminDashboardData.reset_problem_checks
+    end
+
+    it 'calls the passed block' do
+      called = false
+      AdminDashboardData.add_problem_check do
+        called = true
+      end
+
+      AdminDashboardData.fetch_problems
+      expect(called).to eq(true)
+    end
+
+    it 'calls the passed method' do
+      $test_AdminDashboardData_global = false
+      class AdminDashboardData
+        def my_test_method
+          $test_AdminDashboardData_global = true
+        end
+      end
+      AdminDashboardData.add_problem_check :my_test_method
+
+      AdminDashboardData.fetch_problems
+      expect($test_AdminDashboardData_global).to eq(true)
+      $test_AdminDashboardData_global = nil
+    end
+  end
+
   describe "rails_env_check" do
     subject { described_class.new.rails_env_check }
 
     it 'returns nil when running in production mode' do
-      Rails.stubs(:env).returns('production')
-      subject.should be_nil
+      Rails.stubs(env: ActiveSupport::StringInquirer.new('production'))
+      expect(subject).to be_nil
     end
 
     it 'returns a string when running in development mode' do
-      Rails.stubs(:env).returns('development')
-      subject.should_not be_nil
+      Rails.stubs(env: ActiveSupport::StringInquirer.new('development'))
+      expect(subject).to_not be_nil
     end
 
     it 'returns a string when running in test mode' do
-      Rails.stubs(:env).returns('test')
-      subject.should_not be_nil
+      Rails.stubs(env: ActiveSupport::StringInquirer.new('test'))
+      expect(subject).to_not be_nil
     end
   end
 
@@ -26,17 +56,17 @@ describe AdminDashboardData do
 
     it 'returns nil when host_names is set' do
       Discourse.stubs(:current_hostname).returns('something.com')
-      subject.should be_nil
+      expect(subject).to be_nil
     end
 
     it 'returns a string when host_name is localhost' do
       Discourse.stubs(:current_hostname).returns('localhost')
-      subject.should_not be_nil
+      expect(subject).to_not be_nil
     end
 
     it 'returns a string when host_name is production.localhost' do
       Discourse.stubs(:current_hostname).returns('production.localhost')
-      subject.should_not be_nil
+      expect(subject).to_not be_nil
     end
   end
 
@@ -45,12 +75,12 @@ describe AdminDashboardData do
 
     it 'returns nil when gc params are set' do
       ENV.stubs(:[]).with('RUBY_GC_MALLOC_LIMIT').returns(90000000)
-      subject.should be_nil
+      expect(subject).to be_nil
     end
 
     it 'returns a string when gc params are not set' do
       ENV.stubs(:[]).with('RUBY_GC_MALLOC_LIMIT').returns(nil)
-      subject.should_not be_nil
+      expect(subject).to_not be_nil
     end
   end
 
@@ -60,31 +90,31 @@ describe AdminDashboardData do
     it 'returns nil when sidekiq processed a job recently' do
       Jobs.stubs(:last_job_performed_at).returns(1.minute.ago)
       Jobs.stubs(:queued).returns(0)
-      subject.should be_nil
+      expect(subject).to be_nil
     end
 
     it 'returns nil when last job processed was a long time ago, but no jobs are queued' do
       Jobs.stubs(:last_job_performed_at).returns(7.days.ago)
       Jobs.stubs(:queued).returns(0)
-      subject.should be_nil
+      expect(subject).to be_nil
     end
 
     it 'returns nil when no jobs have ever been processed, but no jobs are queued' do
       Jobs.stubs(:last_job_performed_at).returns(nil)
       Jobs.stubs(:queued).returns(0)
-      subject.should be_nil
+      expect(subject).to be_nil
     end
 
     it 'returns a string when no jobs were processed recently and some jobs are queued' do
       Jobs.stubs(:last_job_performed_at).returns(20.minutes.ago)
       Jobs.stubs(:queued).returns(1)
-      subject.should_not be_nil
+      expect(subject).to_not be_nil
     end
 
     it 'returns a string when no jobs have ever been processed, and some jobs are queued' do
       Jobs.stubs(:last_job_performed_at).returns(nil)
       Jobs.stubs(:queued).returns(1)
-      subject.should_not be_nil
+      expect(subject).to_not be_nil
     end
   end
 
@@ -93,17 +123,17 @@ describe AdminDashboardData do
 
     it 'returns nil when total ram is 1 GB' do
       MemInfo.any_instance.stubs(:mem_total).returns(1025272)
-      subject.should be_nil
+      expect(subject).to be_nil
     end
 
     it 'returns nil when total ram cannot be determined' do
       MemInfo.any_instance.stubs(:mem_total).returns(nil)
-      subject.should be_nil
+      expect(subject).to be_nil
     end
 
     it 'returns a string when total ram is less than 1 GB' do
       MemInfo.any_instance.stubs(:mem_total).returns(512636)
-      subject.should_not be_nil
+      expect(subject).to_not be_nil
     end
   end
 
@@ -119,13 +149,13 @@ describe AdminDashboardData do
       before { ActionMailer::Base.stubs(:smtp_settings).returns({address: 'smtp.gmail.com'}) }
 
       it 'returns nil in development env' do
-        Rails.stubs(:env).returns('development')
+        Rails.stubs(env: ActiveSupport::StringInquirer.new('development'))
         expect(subject).to be_nil
       end
 
       it 'returns a string when in production env' do
-        Rails.stubs(:env).returns('production')
-        expect(subject).to_not be_nil
+        Rails.stubs(env: ActiveSupport::StringInquirer.new('production'))
+        expect(subject).not_to be_nil
       end
     end
   end
@@ -135,42 +165,42 @@ describe AdminDashboardData do
 
     describe 'favicon_url check' do
       before do
-        SiteSetting.stubs(:logo_url).returns('/assets/my-logo.jpg')
-        SiteSetting.stubs(:logo_small_url).returns('/assets/my-small-logo.jpg')
+        SiteSetting.logo_url = '/assets/my-logo.jpg'
+        SiteSetting.logo_small_url = '/assets/my-small-logo.jpg'
       end
 
       it 'returns a string when favicon_url is default' do
-        expect(subject).to_not be_nil
+        expect(subject).not_to be_nil
       end
 
       it 'returns a string when favicon_url contains default filename' do
-        SiteSetting.stubs(:favicon_url).returns("/prefix#{SiteSetting.defaults[:favicon_url]}")
-        expect(subject).to_not be_nil
+        SiteSetting.favicon_url = "/prefix#{SiteSetting.defaults[:favicon_url]}"
+        expect(subject).not_to be_nil
       end
 
       it 'returns nil when favicon_url does not match default-favicon.png' do
-        SiteSetting.stubs(:favicon_url).returns('/assets/my-favicon.png')
+        SiteSetting.favicon_url = '/assets/my-favicon.png'
         expect(subject).to be_nil
       end
     end
 
     describe 'logo_url check' do
       before do
-        SiteSetting.stubs(:favicon_url).returns('/assets/my-favicon.png')
-        SiteSetting.stubs(:logo_small_url).returns('/assets/my-small-logo.jpg')
+        SiteSetting.favicon_url = '/assets/my-favicon.png'
+        SiteSetting.logo_small_url = '/assets/my-small-logo.jpg'
       end
 
       it 'returns a string when logo_url is default' do
-        expect(subject).to_not be_nil
+        expect(subject).not_to be_nil
       end
 
       it 'returns a string when logo_url contains default filename' do
-        SiteSetting.stubs(:logo_url).returns("/prefix#{SiteSetting.defaults[:logo_url]}")
-        expect(subject).to_not be_nil
+        SiteSetting.logo_url = "/prefix#{SiteSetting.defaults[:logo_url]}"
+        expect(subject).not_to be_nil
       end
 
       it 'returns nil when logo_url does not match d-logo-sketch.png' do
-        SiteSetting.stubs(:logo_url).returns('/assets/my-logo.png')
+        SiteSetting.logo_url = '/assets/my-logo.png'
         expect(subject).to be_nil
       end
     end
@@ -184,7 +214,7 @@ describe AdminDashboardData do
       context 'when disabled' do
         it 'returns nil' do
           SiteSetting.stubs(enable_setting).returns(false)
-          subject.should be_nil
+          expect(subject).to be_nil
         end
       end
 
@@ -196,25 +226,25 @@ describe AdminDashboardData do
         it 'returns nil key and secret are set' do
           SiteSetting.stubs(key).returns('12313213')
           SiteSetting.stubs(secret).returns('12312313123')
-          subject.should be_nil
+          expect(subject).to be_nil
         end
 
         it 'returns a string when key is not set' do
           SiteSetting.stubs(key).returns('')
           SiteSetting.stubs(secret).returns('12312313123')
-          subject.should_not be_nil
+          expect(subject).to_not be_nil
         end
 
         it 'returns a string when secret is not set' do
           SiteSetting.stubs(key).returns('123123')
           SiteSetting.stubs(secret).returns('')
-          subject.should_not be_nil
+          expect(subject).to_not be_nil
         end
 
         it 'returns a string when key and secret are not set' do
           SiteSetting.stubs(key).returns('')
           SiteSetting.stubs(secret).returns('')
-          subject.should_not be_nil
+          expect(subject).to_not be_nil
         end
       end
     end
@@ -244,26 +274,8 @@ describe AdminDashboardData do
     end
   end
 
-  describe "enforce_global_nicknames_check" do
-    subject { described_class.new.enforce_global_nicknames_check }
-
-    it 'returns nil when enforce_global_nicknames and discourse_org_access_key are set' do
-      SiteSetting.stubs(:enforce_global_nicknames).returns(true)
-      SiteSetting.stubs(:discourse_org_access_key).returns('123')
-      subject.should be_nil
-    end
-
-    it 'returns a string when enforce_global_nicknames is true but discourse_org_access_key is not' do
-      SiteSetting.stubs(:enforce_global_nicknames).returns(true)
-      SiteSetting.stubs(:discourse_org_access_key).returns('')
-      subject.should_not be_nil
-    end
-
-    it 'returns nil when enforce_global_nicknames is false and discourse_org_access_key is set' do
-      SiteSetting.stubs(:enforce_global_nicknames).returns(false)
-      SiteSetting.stubs(:discourse_org_access_key).returns('123')
-      subject.should be_nil
-    end
+  describe 'stats cache' do
+    include_examples 'stats cachable'
   end
 
 end

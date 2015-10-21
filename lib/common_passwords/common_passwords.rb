@@ -9,7 +9,7 @@
 
 class CommonPasswords
 
-  PASSWORD_FILE = File.join(Rails.root, 'lib', 'common_passwords', '10k-common-passwords.txt')
+  PASSWORD_FILE = File.join(Rails.root, 'lib', 'common_passwords', 'long-common-passwords.txt')
   LIST_KEY = 'discourse-common-passwords'
 
   @mutex = Mutex.new
@@ -41,7 +41,7 @@ class CommonPasswords
 
     def self.load_passwords
       passwords = File.readlines(PASSWORD_FILE)
-      passwords[0,5000].map!(&:chomp).each do |pwd|
+      passwords.map!(&:chomp).each do |pwd|
         # slower, but a tad more compatible
         redis.sadd LIST_KEY, pwd
       end

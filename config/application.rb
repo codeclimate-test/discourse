@@ -2,45 +2,38 @@ require File.expand_path('../boot', __FILE__)
 require 'rails/all'
 
 # Plugin related stuff
+require_relative '../lib/discourse_event'
+require_relative '../lib/discourse_plugin'
 require_relative '../lib/discourse_plugin_registry'
 
 # Global config
 require_relative '../app/models/global_setting'
 
+require 'pry-rails' if Rails.env.development?
+
 if defined?(Bundler)
   Bundler.require(*Rails.groups(assets: %w(development test profile)))
 end
 
-# PATCH DB configuration
-class Rails::Application::Configuration
-
-  def database_configuration_with_global_config
-    if Rails.env == "production"
-      GlobalSetting.database_config
-    else
-      database_configuration_without_global_config
-    end
-  end
-
-  alias_method_chain :database_configuration, :global_config
-end
-
 module Discourse
   class Application < Rails::Application
+    def config.database_configuration
+      if Rails.env.production?
+        GlobalSetting.database_config
+      else
+        super
+      end
+    end
     # Settings in config/environments/* take precedence over those specified here.
     # Application configuration should go into files in config/initializers
     # -- all .rb files in that directory are automatically loaded.
 
-    # HACK!! regression in rubygems / bundler in ruby-head
-    if RUBY_VERSION == "2.1.0"
-      $:.map! do |path|
-        path = File.expand_path(path.sub("../../","../")) if path =~ /fast_xor/ && !File.directory?(File.expand_path(path))
-        path
-      end
-    end
-
     require 'discourse'
+    require 'es6_module_transpiler/rails'
     require 'js_locale_helper'
+
+    # tiny file needed by site settings
+    require 'highlight_js/highlight_js'
 
     # mocha hates us, active_support/testing/mochaing.rb line 2 is requiring the wrong
     #  require, patched in source, on upgrade remove this
@@ -52,6 +45,11 @@ module Discourse
       end
     end
 
+    # Disable so this is only run manually
+    # we may want to change this later on
+    # issue is image_optim crashes on missing dependencies
+    config.assets.image_optim = false
+
     # Custom directories with classes and modules you want to be autoloadable.
     config.autoload_paths += Dir["#{config.root}/app/serializers"]
     config.autoload_paths += Dir["#{config.root}/lib/validators/"]
@@ -61,14 +59,17 @@ module Discourse
     # :all can be used as a placeholder for all plugins not explicitly named.
     # config.plugins = [ :exception_notification, :ssl_requirement, :all ]
 
-    config.assets.paths += %W(#{config.root}/config/locales)
+    config.assets.paths += %W(#{config.root}/config/locales #{config.root}/public/javascripts)
+
+    # Allows us to skip minifincation on some files
+    config.assets.skip_minification = []
 
     # explicitly precompile any images in plugins ( /assets/images ) path
     config.assets.precompile += [lambda do |filename, path|
       path =~ /assets\/images/ && !%w(.js .css).include?(File.extname(filename))
     end]
 
-    config.assets.precompile += ['vendor.js', 'common.css', 'desktop.css', 'mobile.css', 'admin.js', 'admin.css', 'shiny/shiny.css', 'preload_store.js', 'browser-update.js', 'embed.css']
+    config.assets.precompile += ['vendor.js', 'common.css', 'desktop.css', 'mobile.css', 'admin.js', 'admin.css', 'shiny/shiny.css', 'preload_store.js', 'browser-update.js', 'embed.css', 'break_string.js']
 
     # Precompile all defer
     Dir.glob("#{config.root}/app/assets/javascripts/defer/*.js").each do |file|
@@ -90,10 +91,11 @@ module Discourse
 
     # Set Time.zone default to the specified zone and make Active Record auto-convert to this zone.
     # Run "rake -D time" for a list of tasks for finding time zone names. Default is UTC.
-    config.time_zone = 'Eastern Time (US & Canada)'
+    config.time_zone = 'UTC'
 
-    # auto-load server locale in plugins
-    config.i18n.load_path += Dir["#{Rails.root}/plugins/*/config/locales/server.*.yml"]
+    # auto-load locales in plugins
+    # NOTE: we load both client & server locales since some might be used by PrettyText
+    config.i18n.load_path += Dir["#{Rails.root}/plugins/*/config/locales/*.yml"]
 
     # Configure the default encoding used in templates for Ruby 1.9.
     config.encoding = 'utf-8'
@@ -101,12 +103,11 @@ module Discourse
     # Configure sensitive parameters which will be filtered from the log file.
     config.filter_parameters += [
         :password,
-        :pop3s_polling_password,
+        :pop3_polling_password,
         :s3_secret_access_key,
         :twitter_consumer_secret,
         :facebook_app_secret,
-        :github_client_secret,
-        :discourse_org_access_key,
+        :github_client_secret
     ]
 
     # Enable the asset pipeline
@@ -121,18 +122,20 @@ module Discourse
     # see: http://stackoverflow.com/questions/11894180/how-does-one-correctly-add-custom-sql-dml-in-migrations/11894420#11894420
     config.active_record.schema_format = :sql
 
+    config.active_record.raise_in_transactional_callbacks = true
+
     # per https://www.owasp.org/index.php/Password_Storage_Cheat_Sheet
     config.pbkdf2_iterations = 64000
     config.pbkdf2_algorithm = "sha256"
 
-    # dumping rack lock cause the message bus does not work with it (throw :async, it catches Exception)
-    # see: https://github.com/sporkrb/spork/issues/66
-    # rake assets:precompile also fails
-    config.threadsafe! unless rails4? || $PROGRAM_NAME =~ /spork|rake/
-
     # rack lock is nothing but trouble, get rid of it
     # for some reason still seeing it in Rails 4
     config.middleware.delete Rack::Lock
+
+    # ETags are pointless, we are dynamically compressing
+    # so nginx strips etags, may revisit when mainline nginx
+    # supports etags (post 1.7)
+    config.middleware.delete Rack::ETag
 
     # route all exceptions via our router
     config.exceptions_app = self.routes
@@ -141,8 +144,11 @@ module Discourse
     config.handlebars.templates_root = 'discourse/templates'
 
     require 'discourse_redis'
+    require 'logster/redis_store'
     # Use redis for our cache
     config.cache_store = DiscourseRedis.new_redis_store
+    $redis = DiscourseRedis.new
+    Logster.store = Logster::RedisStore.new(DiscourseRedis.new)
 
     # we configure rack cache on demand in an initializer
     # our setup does not use rack cache and instead defers to nginx
@@ -153,11 +159,12 @@ module Discourse
     config.ember.ember_location = "#{Rails.root}/vendor/assets/javascripts/production/ember.js"
     config.ember.handlebars_location = "#{Rails.root}/vendor/assets/javascripts/handlebars.js"
 
-    # Since we are using strong_parameters, we can disable and remove attr_accessible.
-    config.active_record.whitelist_attributes = false unless rails4?
-
     require 'auth'
-    Discourse.activate_plugins! unless Rails.env.test?
+    Discourse.activate_plugins! unless Rails.env.test? and ENV['LOAD_PLUGINS'] != "1"
+
+    if GlobalSetting.relative_url_root.present?
+      config.relative_url_root = GlobalSetting.relative_url_root
+    end
 
     config.after_initialize do
       # So open id logs somewhere sane
@@ -167,16 +174,17 @@ module Discourse
       end
     end
 
-    # This is not really required per-se, but we do not want to support
-    # XML params, we see errors in our logs about malformed XML and there
-    # absolutly no spot in our app were we use XML as opposed to JSON endpoints
-    #
-    # Rails 4 no longer includes this by default
-    ActionDispatch::ParamsParser::DEFAULT_PARSERS.delete(Mime::XML) unless rails4?
-
     if ENV['RBTRACE'] == "1"
       require 'rbtrace'
     end
 
+  end
+end
+
+if defined?(PhusionPassenger)
+  PhusionPassenger.on_event(:starting_worker_process) do |forked|
+    if forked
+      Discourse.after_fork
+    end
   end
 end

@@ -2,23 +2,34 @@ require_dependency 'guardian/category_guardian'
 require_dependency 'guardian/ensure_magic'
 require_dependency 'guardian/post_guardian'
 require_dependency 'guardian/topic_guardian'
+require_dependency 'guardian/user_guardian'
+require_dependency 'guardian/post_revision_guardian'
+require_dependency 'guardian/group_guardian'
+
 # The guardian is responsible for confirming access to various site resources and operations
 class Guardian
   include EnsureMagic
   include CategoryGuardian
-  include PostGuardain
+  include PostGuardian
   include TopicGuardian
-    
+  include UserGuardian
+  include PostRevisionGuardian
+  include GroupGuardian
+
   class AnonymousUser
     def blank?; true; end
     def admin?; false; end
     def staff?; false; end
+    def moderator?; false; end
     def approved?; false; end
     def secure_category_ids; []; end
     def topic_create_allowed_category_ids; []; end
     def has_trust_level?(level); false; end
     def email; nil; end
   end
+
+  attr_accessor :can_see_emails
+
   def initialize(user=nil)
     @user = user.presence || AnonymousUser.new
   end
@@ -44,6 +55,10 @@ class Guardian
     @user.staff?
   end
 
+  def is_moderator?
+    @user.moderator?
+  end
+
   def is_developer?
     @user &&
     is_admin? &&
@@ -63,6 +78,26 @@ class Guardian
     end
   end
 
+  def can_create?(klass, parent=nil)
+    return false unless authenticated? && klass
+
+    # If no parent is provided, we look for a can_create_klass?
+    # custom method.
+    #
+    # If a parent is provided, we look for a method called
+    # can_create_klass_on_parent?
+    target = klass.name.underscore
+    if parent.present?
+      return false unless can_see?(parent)
+      target << "_on_#{parent.class.name.underscore}"
+    end
+    create_method = :"can_create_#{target}?"
+
+    return send(create_method, parent) if respond_to?(create_method)
+
+    true
+  end
+
   # Can the user edit the obj
   def can_edit?(obj)
     can_do?(:edit, obj)
@@ -74,13 +109,22 @@ class Guardian
   end
 
   def can_moderate?(obj)
-    obj && is_staff?
+    obj && authenticated? && (is_staff? || (obj.is_a?(Topic) && @user.has_trust_level?(TrustLevel[4])))
   end
   alias :can_move_posts? :can_moderate?
   alias :can_see_flags? :can_moderate?
   alias :can_send_activation_email? :can_moderate?
+  alias :can_close? :can_moderate?
 
- 
+  def can_grant_badges?(_user)
+    SiteSetting.enable_badges && is_staff?
+  end
+
+  def can_see_group?(group)
+    group.present? && (is_admin? || group.visible?)
+  end
+
+
 
   # Can we impersonate this user?
   def can_impersonate?(target)
@@ -101,7 +145,10 @@ class Guardian
   def can_approve?(target)
     is_staff? && target && not(target.approved?)
   end
-  alias :can_activate? :can_approve?
+
+  def can_activate?(target)
+    is_staff? && target && not(target.active?)
+  end
 
   def can_suspend?(user)
     user && is_staff? && user.regular?
@@ -128,20 +175,12 @@ class Guardian
     user && is_staff?
   end
 
+  def can_change_primary_group?(user)
+    user && is_staff?
+  end
+
   def can_change_trust_level?(user)
     user && is_staff?
-  end
-
-  def can_block_user?(user)
-    user && is_staff? && not(user.staff?)
-  end
-
-  def can_unblock_user?(user)
-    user && is_staff?
-  end
-
-  def can_delete_user?(user)
-    user && is_staff? && !user.admin? && user.created_at > SiteSetting.delete_user_max_age.to_i.days.ago
   end
 
   # Support sites that have to approve users
@@ -155,53 +194,79 @@ class Guardian
     @user.approved?
   end
 
-  def can_see_pending_invites_from?(user)
+  def can_see_invite_details?(user)
     is_me?(user)
   end
 
-  def can_invite_to_forum?
+  def can_invite_to_forum?(groups=nil)
     authenticated? &&
+    (SiteSetting.max_invites_per_day.to_i > 0 || is_staff?) &&
+    !SiteSetting.enable_sso &&
+    SiteSetting.enable_local_logins &&
     (
-      (!SiteSetting.must_approve_users? && @user.has_trust_level?(:regular)) ||
+      (!SiteSetting.must_approve_users? && @user.has_trust_level?(TrustLevel[2])) ||
       is_staff?
-    )
+    ) &&
+    (groups.blank? || is_admin?)
   end
 
-  def can_invite_to?(object)
-    can_see?(object) && can_invite_to_forum?
+  def can_invite_to?(object, group_ids=nil)
+    return false if ! authenticated?
+    return false unless ( SiteSetting.enable_local_logins && (!SiteSetting.must_approve_users? || is_staff?) )
+    return true if is_admin?
+    return false if (SiteSetting.max_invites_per_day.to_i == 0 && !is_staff?)
+    return false if ! can_see?(object)
+    return false if group_ids.present?
+
+    if object.is_a?(Topic) && object.category
+      if object.category.groups.any?
+        return true if object.category.groups.all? { |g| can_edit_group?(g) }
+      end
+    end
+
+    user.has_trust_level?(TrustLevel[2])
+  end
+
+  def can_bulk_invite_to_forum?(user)
+    user.admin?
+  end
+
+  def can_create_disposable_invite?(user)
+    user.admin?
+  end
+
+  def can_send_multiple_invites?(user)
+    user.staff?
   end
 
   def can_see_private_messages?(user_id)
-    is_staff? || (authenticated? && @user.id == user_id)
-  end
-
-  def can_edit_user?(user)
-    is_me?(user) || is_staff?
-  end
-
-  def can_edit_username?(user)
-    return true if is_staff?
-    return false if SiteSetting.username_change_period <= 0
-    is_me?(user) && (user.post_count == 0 || user.created_at > SiteSetting.username_change_period.days.ago)
-  end
-
-  def can_edit_email?(user)
-    return true if is_staff?
-    return false unless SiteSetting.email_editable?
-    can_edit?(user)
+    is_admin? || (authenticated? && @user.id == user_id)
   end
 
   def can_send_private_message?(target)
-    (User === target || Group === target) &&
+    (target.is_a?(Group) || target.is_a?(User)) &&
+    # User is authenticated
     authenticated? &&
-
     # Can't send message to yourself
     is_not_me?(target) &&
-
     # Have to be a basic level at least
-    @user.has_trust_level?(:basic) &&
+    @user.has_trust_level?(SiteSetting.min_trust_to_send_messages) &&
+    # PMs are enabled
+    (SiteSetting.enable_private_messages ||
+      @user.username == SiteSetting.site_contact_username ||
+      @user == Discourse.system_user) &&
+    # Can't send PMs to suspended users
+    (is_staff? || target.is_a?(Group) || !target.suspended?)
+  end
 
-    SiteSetting.enable_private_messages
+  def can_see_emails?
+    @can_see_emails
+  end
+
+  def can_export_entity?(entity_type)
+    return true if is_staff?
+    return false if entity_type == "admin"
+    UserExport.where(user_id: @user.id, created_at: (Time.zone.now.beginning_of_day..Time.zone.now.end_of_day)).count == 0
   end
 
   private
@@ -217,7 +282,7 @@ class Guardian
   end
 
   def is_me?(other)
-    other && authenticated? && User === other && @user == other
+    other && authenticated? && other.is_a?(User) && @user == other
   end
 
   def is_not_me?(other)
@@ -241,6 +306,8 @@ class Guardian
     if obj && authenticated?
       action_method = method_name_for action, obj
       return (action_method ? send(action_method, obj) : true)
+    else
+      false
     end
   end
 

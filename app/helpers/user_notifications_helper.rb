@@ -18,7 +18,10 @@ module UserNotificationsHelper
   end
 
   def logo_url
-    logo_url = SiteSetting.logo_url
+    logo_url = SiteSetting.digest_logo_url
+    logo_url = SiteSetting.logo_url if logo_url.blank?
+
+    return nil if logo_url.blank?
     if logo_url !~ /http(s)?\:\/\//
       logo_url = "#{Discourse.base_url}#{logo_url}"
     end
@@ -29,7 +32,41 @@ module UserNotificationsHelper
     "<a href='#{Discourse.base_url}'>#{@site_name}</a>"
   end
 
-  def email_excerpt(html)
-    raw Sanitize.clean(HTML_Truncator.truncate(html, 300), Sanitize::Config::RELAXED)
+  def first_paragraph_from(html)
+    doc = Nokogiri::HTML(html)
+
+    result = ""
+    doc.css('p').each do |p|
+      if p.text.present?
+        result << p.to_s
+        return result if result.size >= 100
+      end
+    end
+    return result unless result.blank?
+
+    # If there is no first paragaph, return the first div (onebox)
+    doc.css('div').first
   end
+
+  def email_excerpt(html, posts_count)
+    # only include 1st paragraph when more than 1 posts
+    html = first_paragraph_from(html).to_s if posts_count > 1
+    raw format_for_email(html)
+  end
+
+  def normalize_name(name)
+    name.downcase.gsub(/[\s_-]/, '')
+  end
+
+  def show_name_on_post(post)
+    SiteSetting.enable_names? &&
+      SiteSetting.display_name_on_posts? &&
+      post.user.name.present? &&
+      normalize_name(post.user.name) != normalize_name(post.user.username)
+  end
+
+  def format_for_email(html)
+    PrettyText.format_for_email(html).html_safe
+  end
+
 end

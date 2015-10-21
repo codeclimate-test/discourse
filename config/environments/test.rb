@@ -8,7 +8,7 @@ Discourse::Application.configure do
   config.cache_classes = true
 
   # Configure static asset server for tests with Cache-Control for performance
-  config.serve_static_assets = true
+  config.serve_static_files = true
 
   # Show full error reports and disable caching
   config.consider_all_requests_local       = true
@@ -40,8 +40,5 @@ Discourse::Application.configure do
   config.assets.compile = true
   config.assets.digest = false
 
-  # silence deprecation warnings in test
-  config.whiny_nils = true unless rails4?
-  config.eager_load = false if rails4?
-  ActiveSupport::Deprecation.silenced = true
+  config.eager_load = false
 end

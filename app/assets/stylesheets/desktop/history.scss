@@ -1,29 +1,37 @@
 // styles that apply to the popup that appears when you show the edit history of a post
 
-@import "common/foundation/variables";
-@import "common/foundation/mixins";
-
 .modal.history-modal {
+  .btn {
+    // remove transitions on the buttons in the history modal
+    transition: none;
+  }
   .modal-inner-container {
     min-width: 960px;
     min-height: 500px;
   }
   #revision-controls {
     float: left;
-    .btn[disabled]:hover {
-      color: #534d4b;
+    .btn[disabled] {
+      cursor: not-allowed;
+      background-color: dark-light-diff($primary, $secondary, 90%, -60%);
+    }
+    .btn-danger[disabled] {
+      background-color: dark-light-diff($danger, $secondary, 30%, -60%);
     }
   }
   #display-modes {
     text-align: right;
   }
   #revision-details {
-    background-color: #eee;
     padding: 5px;
     margin-top: 10px;
+    border-bottom: 3px solid dark-light-diff($primary, $secondary, 90%, -60%);
   }
   #revisions {
     word-wrap: break-word;
+    table {
+      margin-top: 10px;
+    }
   }
   img {
     max-width: 670px;
@@ -34,10 +42,10 @@
   }
   .markdown {
     font-family: monospace;
-    font-size: 12px;
+    font-size: 0.857em;
     width: 100%;
     border-collapse: collapse;
-    border-spacing: 0px;
+    border-spacing: 0;
     td {
       width: 50%;
       vertical-align: top;
@@ -50,67 +58,6 @@
     img {
       max-width: 400px;
     }
-  }
-  ins, .diff-ins {
-    code, img {
-      border: 2px solid #405A04;
-    }
-    img {
-      opacity: .75;
-      filter: alpha(opacity=75);
-    }
-    a {
-      color: #2D4003;
-      text-decoration: none;
-    }
-  }
-  img.diff-ins, code.diff-ins {
-    border: 2px solid #405A04;
-  }
-  img.diff-ins {
-    opacity: .75;
-    filter: alpha(opacity=75);
-  }
-  .diff-ins {
-    background: #f9ffe1;
-  }
-  ins {
-    color: #405A04;
-    background: #D1E1AD;
-  }
-  del, .diff-del {
-    code, img {
-      border: 2px solid #A82400;
-    }
-    img {
-      opacity: .5;
-      filter: alpha(opacity=50);
-    }
-    a {
-      color: #400E00;
-      text-decoration: none;
-    }
-  }
-  img.diff-del, code.diff-del {
-    border: 2px solid #A82400;
-  }
-  img.diff-del {
-    opacity: .5;
-    filter: alpha(opacity=50);
-  }
-  .diff-del {
-    background: #fff4f4;
-  }
-  del {
-    color: #A82400;
-    background: #E5BDB2;
-  }
-  span.date {
-    font-weight: bold;
-  }
-  span.edit-reason {
-    background-color: #ffffcc;
-    padding: 3px 5px 5px 5px;
   }
   .modal-header {
     height: 42px;

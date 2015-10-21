@@ -53,7 +53,7 @@ describe SiteSettings::YamlLoader do
 
   it "maintains order of categories" do
     receiver.load_yaml(simple)
-    receiver.categories.should == ['category1', 'category2', 'category3']
+    expect(receiver.categories).to eq(['category1', 'category2', 'category3'])
   end
 
   it "can load client settings" do
@@ -64,7 +64,7 @@ describe SiteSettings::YamlLoader do
   end
 
   it "can load enum settings" do
-    receiver.expects(:setting).with('email', 'default_digest_email_frequency', 7, {enum: 'DigestEmailSiteSetting'})
+    receiver.expects(:setting).with('email', 'default_email_digest_frequency', 7, {enum: 'DigestEmailSiteSetting'})
     receiver.load_yaml(enum)
   end
 

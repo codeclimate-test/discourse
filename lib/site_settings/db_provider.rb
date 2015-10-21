@@ -3,43 +3,41 @@ module SiteSettings; end
 class SiteSettings::DbProvider
 
   def initialize(model)
+    model.after_commit do
+      model.notify_changed!
+    end
+
     @model = model
   end
 
   def all
     return [] unless table_exists?
 
-    # note, not leaking out AR records, cause I want all editing to happen
-    # via this API
-    SqlBuilder.new("select name, data_type, value from #{@model.table_name}").map_exec(OpenStruct)
+    # Not leaking out AR records, cause I want all editing to happen via this API
+    SqlBuilder.new("SELECT name, data_type, value FROM #{@model.table_name}").map_exec(OpenStruct)
   end
 
   def find(name)
     return nil unless table_exists?
 
-    # note, not leaking out AR records, cause I want all editing to happen
-    # via this API
-    SqlBuilder.new("select name, data_type, value from #{@model.table_name} where name = :name")
+    # Not leaking out AR records, cause I want all editing to happen via this API
+    SqlBuilder.new("SELECT name, data_type, value FROM #{@model.table_name} WHERE name = :name")
       .map_exec(OpenStruct, name: name)
       .first
   end
 
   def save(name, value, data_type)
-
     return unless table_exists?
 
-    count = @model.where({
-      name: name
-    }).update_all({
-      name: name,
-      value: value,
-      data_type: data_type,
-      updated_at: Time.now
-    })
+    model = @model.find_by(name: name)
+    model ||= @model.new
 
-    if count == 0
-      @model.create!(name: name, value: value, data_type: data_type)
-    end
+    model.name = name
+    model.value =  value
+    model.data_type =  data_type
+
+    # save! used to ensure after_commit is called
+    model.save!
 
     true
   end

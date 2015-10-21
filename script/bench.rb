@@ -2,11 +2,16 @@ require "socket"
 require "csv"
 require "yaml"
 require "optparse"
+require "fileutils"
 
 @include_env = false
 @result_file = nil
 @iterations = 500
 @best_of = 1
+@mem_stats = false
+@unicorn = false
+@dump_heap = false
+
 opts = OptionParser.new do |o|
   o.banner = "Usage: ruby bench.rb [options]"
 
@@ -22,15 +27,29 @@ opts = OptionParser.new do |o|
   o.on("-b", "--best_of [NUM]", "Number of times to run the bench taking best as result") do |i|
     @best_of = i.to_i
   end
+  o.on("-d", "--heap_dump") do
+    @dump_heap = true
+    # We need an env var for config/boot.rb to enable allocation tracing prior to framework init
+    ENV['DISCOURSE_DUMP_HEAP'] = "1"
+  end
+  o.on("-m", "--memory_stats") do
+    @mem_stats = true
+  end
+  o.on("-u", "--unicorn", "Use unicorn to serve pages as opposed to thin") do
+    @unicorn = true
+  end
 end
 opts.parse!
 
 def run(command, opt = nil)
-  if opt == :quiet
-    system(command, out: "/dev/null", err: :out)
-  else
-    system(command, out: $stdout, err: :out)
-  end
+  exit_status =
+    if opt == :quiet
+      system(command, out: "/dev/null", err: :out)
+    else
+      system(command, out: $stdout, err: :out)
+    end
+
+  exit unless exit_status
 end
 
 begin
@@ -53,8 +72,11 @@ end
 def prereqs
   puts "Be sure to following packages are installed:
 
+sudo apt-get -y install build-essential libssl-dev libyaml-dev git libtool libxslt-dev libxml2-dev libpq-dev gawk curl pngcrush python-software-properties software-properties-common tasksel
+
 sudo tasksel install postgresql-server
-sudo apt-get -y install build-essential libssl-dev libyaml-dev git libtool libxslt-dev libxml2-dev libpq-dev gawk curl pngcrush python-software-properties
+OR
+apt-get install postgresql-server^
 
 sudo apt-add-repository -y ppa:rwky/redis
 sudo apt-get update
@@ -63,7 +85,7 @@ sudo apt-get install redis-server
 end
 
 puts "Running bundle"
-if !run("bundle", :quiet)
+if run("bundle", :quiet)
   puts "Quitting, some of the gems did not install"
   prereqs
   exit
@@ -82,24 +104,21 @@ unless File.exists?("config/database.yml")
   `cp config/database.yml.development-sample config/database.yml`
 end
 
-unless File.exists?("config/redis.yml")
-  puts "Copying redis.yml.sample to redis.yml"
-  `cp config/redis.yml.sample config/redis.yml`
-end
-
 ENV["RAILS_ENV"] = "profile"
 
+
+discourse_env_vars = %w(DISCOURSE_DUMP_HEAP RUBY_GC_HEAP_INIT_SLOTS RUBY_GC_HEAP_FREE_SLOTS RUBY_GC_HEAP_GROWTH_FACTOR RUBY_GC_HEAP_GROWTH_MAX_SLOTS RUBY_GC_MALLOC_LIMIT RUBY_GC_OLDMALLOC_LIMIT RUBY_GC_MALLOC_LIMIT_MAX RUBY_GC_OLDMALLOC_LIMIT_MAX RUBY_GC_MALLOC_LIMIT_GROWTH_FACTOR RUBY_GC_OLDMALLOC_LIMIT_GROWTH_FACTOR RUBY_GC_HEAP_OLDOBJECT_LIMIT_FACTOR)
 
 if @include_env
   puts "Running with tuned environment"
   ENV["RUBY_GC_MALLOC_LIMIT"] = "50_000_000"
-  ENV.delete "RUBY_HEAP_SLOTS_GROWTH_FACTOR"
-  ENV.delete "RUBY_HEAP_MIN_SLOTS"
-  ENV.delete "RUBY_FREE_MIN"
+  discourse_env_vars - %w(RUBY_GC_MALLOC_LIMIT).each do |v|
+    ENV.delete v
+  end
 else
   # clean env
   puts "Running with the following custom environment"
-  %w{RUBY_GC_MALLOC_LIMIT RUBY_HEAP_MIN_SLOTS RUBY_FREE_MIN}.each do |w|
+  discourse_env_vars.each do |w|
     puts "#{w}: #{ENV[w]}"
   end
 end
@@ -135,7 +154,9 @@ api_key = `bundle exec rake api_key:get`.split("\n")[-1]
 
 def bench(path)
   puts "Running apache bench warmup"
-  `ab -n 10 "http://127.0.0.1:#{@port}#{path}"`
+  add = ""
+  add = "-c 3 " if @unicorn
+  `ab #{add} -n 10 "http://127.0.0.1:#{@port}#{path}"`
   puts "Benchmarking #{path}"
   `ab -n #{@iterations} -e tmp/ab.csv "http://127.0.0.1:#{@port}#{path}"`
 
@@ -152,7 +173,13 @@ begin
   puts "precompiling assets"
   run("bundle exec rake assets:precompile")
 
-  pid = spawn("bundle exec thin start -p #{@port}")
+  pid = if @unicorn
+          ENV['UNICORN_PORT'] = @port.to_s
+          FileUtils.mkdir_p(File.join('tmp', 'pids'))
+          spawn("bundle exec unicorn -c config/unicorn.conf.rb")
+        else
+          spawn("bundle exec thin start -p #{@port}")
+        end
 
   while port_available? @port
     sleep 1
@@ -165,14 +192,15 @@ begin
   run "wget http://127.0.0.1:#{@port}/ -o /dev/null"
 
   tests = [
+    ["categories", "/categories"],
     ["home", "/"],
-    ["topic", "/t/oh-how-i-wish-i-could-shut-up-like-a-tunnel-for-so/69"],
+    ["topic", "/t/oh-how-i-wish-i-could-shut-up-like-a-tunnel-for-so/69"]
     # ["user", "/users/admin1/activity"],
-    ["categories", "/categories"]
   ]
 
-  tests += tests.map{|k,url| ["#{k}_admin", "#{url}#{append}"]}
-  tests.shuffle!
+  tests = tests.map{|k,url| ["#{k}_admin", "#{url}#{append}"]} + tests
+
+  # NOTE: we run the most expensive page first in the bench
 
   def best_of(a, b)
     return a unless b
@@ -202,15 +230,40 @@ begin
 
   run("RAILS_ENV=profile bundle exec rake assets:clean")
 
-  rss = `ps -o rss -p #{pid}`.chomp.split("\n").last.to_i
+  def get_mem(pid)
+    YAML.load `ruby script/memstats.rb #{pid} --yaml`
+  end
+
+
+  mem = get_mem(pid)
 
   results = results.merge({
     "timings" => @timings,
     "ruby-version" => "#{RUBY_VERSION}-p#{RUBY_PATCHLEVEL}",
-    "rss_kb" => rss
+    "rss_kb" => mem["rss_kb"],
+    "pss_kb" => mem["pss_kb"]
   }).merge(facts)
 
+  if @unicorn
+    child_pids = `ps --ppid #{pid} | awk '{ print $1; }' | grep -v PID`.split("\n")
+    child_pids.each do |child|
+      mem = get_mem(child)
+      results["rss_kb_#{child}"] = mem["rss_kb"]
+      results["pss_kb_#{child}"] = mem["pss_kb"]
+    end
+  end
+
   puts results.to_yaml
+
+  if @mem_stats
+    puts
+    puts open("http://127.0.0.1:#{@port}/admin/memory_stats#{append}").read
+  end
+
+  if @dump_heap
+    puts
+    puts open("http://127.0.0.1:#{@port}/admin/dump_heap#{append}").read
+  end
 
   if @result_file
     File.open(@result_file,"wb") do |f|

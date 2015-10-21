@@ -1,22 +1,24 @@
-module UrlHelper
+class UrlHelper
 
-  def is_local(url)
-    Discourse.store.has_been_uploaded?(url) ||
-    url =~ /^\/assets\// ||
-    url =~ /^\/plugins\// ||
-    url.start_with?(Discourse.asset_host || Discourse.base_url_no_prefix)
+  def self.is_local(url)
+    url.present? && (
+      Discourse.store.has_been_uploaded?(url) ||
+      !!(url =~ /^\/assets\//) ||
+      !!(url =~ /^\/plugins\//) ||
+      url.start_with?(Discourse.asset_host || Discourse.base_url_no_prefix)
+    )
   end
 
-  def absolute(url, cdn = Discourse.asset_host)
+  def self.absolute(url, cdn = Discourse.asset_host)
     url =~ /^\/[^\/]/ ? (cdn || Discourse.base_url_no_prefix) + url : url
   end
 
-  def absolute_without_cdn(url)
-    absolute(url, nil)
+  def self.absolute_without_cdn(url)
+    self.absolute(url, nil)
   end
 
-  def schemaless(url)
-    url.gsub(/^https?:/, "")
+  def self.schemaless(url)
+    url.sub(/^http:/, "")
   end
 
 end

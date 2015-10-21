@@ -7,6 +7,11 @@ class SiteSetting < ActiveRecord::Base
   validates_presence_of :name
   validates_presence_of :data_type
 
+  after_save do |site_setting|
+    DiscourseEvent.trigger(:site_setting_saved, site_setting)
+    true
+  end
+
   def self.load_settings(file)
     SiteSettings::YamlLoader.new(file).load do |category, name, default, opts|
       if opts.delete(:client)
@@ -19,13 +24,16 @@ class SiteSetting < ActiveRecord::Base
 
   load_settings(File.join(Rails.root, 'config', 'site_settings.yml'))
 
-  Dir[File.join(Rails.root, "plugins", "*", "config", "settings.yml")].each do |file|
-    load_settings(file)
+  unless Rails.env.test? && ENV['LOAD_PLUGINS'] != "1"
+    Dir[File.join(Rails.root, "plugins", "*", "config", "settings.yml")].each do |file|
+      load_settings(file)
+    end
   end
 
+  client_settings << :available_locales
 
-  def self.call_discourse_hub?
-    self.enforce_global_nicknames? && self.discourse_org_access_key.present?
+  def self.available_locales
+    LocaleSiteSetting.values.map{ |e| e[:value] }.join('|')
   end
 
   def self.topic_title_length
@@ -38,6 +46,10 @@ class SiteSetting < ActiveRecord::Base
 
   def self.post_length
     min_post_length..max_post_length
+  end
+
+  def self.first_post_length
+    min_first_post_length..max_post_length
   end
 
   def self.private_message_post_length
@@ -62,30 +74,35 @@ class SiteSetting < ActiveRecord::Base
                   .first
   end
 
-  def self.authorized_uploads
-    authorized_extensions.tr(" ", "")
-                         .split("|")
-                         .map { |extension| (extension.start_with?(".") ? extension[1..-1] : extension).gsub(".", "\.") }
-  end
+  def self.should_download_images?(src)
+    setting = disabled_image_download_domains
+    return true unless setting.present?
 
-  def self.authorized_upload?(file)
-    authorized_uploads.count > 0 && file.original_filename =~ /\.(#{authorized_uploads.join("|")})$/i
-  end
-
-  def self.images
-    @images ||= Set.new ["jpg", "jpeg", "png", "gif", "tif", "tiff", "bmp"]
-  end
-
-  def self.authorized_images
-    authorized_uploads.select { |extension| images.include?(extension) }
-  end
-
-  def self.authorized_image?(file)
-    authorized_images.count > 0 && file.original_filename =~ /\.(#{authorized_images.join("|")})$/i
+    host = URI.parse(src).host
+    return !(setting.split('|').include?(host))
+  rescue URI::InvalidURIError
+    return true
   end
 
   def self.scheme
     use_https? ? "https" : "http"
+  end
+
+  def self.default_categories_selected
+    [
+      SiteSetting.default_categories_watching.split("|"),
+      SiteSetting.default_categories_tracking.split("|"),
+      SiteSetting.default_categories_muted.split("|"),
+    ].flatten.to_set
+  end
+
+  def self.min_redirected_to_top_period
+    TopTopic.sorted_periods.each do |p|
+      period = p[0]
+      return period if TopTopic.topics_per_period(period) >= SiteSetting.topics_per_period_in_top_page
+    end
+    # not enough topics
+    nil
   end
 
 end
@@ -101,4 +118,3 @@ end
 #  created_at :datetime         not null
 #  updated_at :datetime         not null
 #
-

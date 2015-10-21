@@ -6,13 +6,10 @@ class UserActivator
     @session = session
     @cookies = cookies
     @request = request
-    @settings = SiteSetting
-    @hub = DiscourseHub
     @message = nil
   end
 
   def start
-    register_nickname
   end
 
   def finish
@@ -26,7 +23,8 @@ class UserActivator
   end
 
   def factory
-    if @settings.must_approve_users?
+    invite = Invite.find_by(email: Email.downcase(@user.email))
+    if SiteSetting.must_approve_users? && !(invite.present? && !invite.expired? && !invite.destroyed? && invite.link_valid?)
       ApprovalActivator
     elsif !user.active?
       EmailActivator
@@ -35,11 +33,6 @@ class UserActivator
     end
   end
 
-  def register_nickname
-    if user.valid? && @settings.call_discourse_hub?
-      @hub.register_nickname(user.username, user.email)
-    end
-  end
 end
 
 class ApprovalActivator < UserActivator
@@ -50,10 +43,13 @@ end
 
 class EmailActivator < UserActivator
   def activate
+    email_token = user.email_tokens.unconfirmed.active.first
+    email_token = user.email_tokens.create(email: user.email) if email_token.nil?
+
     Jobs.enqueue(:user_email,
       type: :signup,
       user_id: user.id,
-      email_token: user.email_tokens.first.token
+      email_token: email_token.token
     )
     I18n.t("login.activate_email", email: user.email)
   end

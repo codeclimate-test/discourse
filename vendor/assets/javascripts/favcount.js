@@ -1,5 +1,5 @@
 /*
- * favcount.js v1.4.0
+ * favcount.js v1.5.0
  * http://chrishunt.co/favcount
  * Dynamically updates the favicon with a number.
  *
@@ -19,7 +19,11 @@
     var self = this,
         img  = document.createElement('img');
 
+    if (Ember.testing) { return; }
+
     if (self.canvas.getContext) {
+      img.crossOrigin = "anonymous";
+
       img.onload = function() {
         drawCanvas(self.canvas, self.opacity, self.font, img, normalize(count));
       };
@@ -92,9 +96,7 @@
     head.appendChild(favicon);
   }
 
+  Favcount.VERSION = '1.5.0';
   this.Favcount = Favcount;
 }).call(this);
 
-(function(){
-  Favcount.VERSION = '1.4.0';
-}).call(this);

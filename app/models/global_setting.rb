@@ -23,10 +23,34 @@ class GlobalSetting
         hash[s] = val
       end
     end
-    hash["host_names"] = [ hostname ]
+    hostnames = [ hostname ]
+    hostnames << backup_hostname if backup_hostname.present?
+
+    hash["host_names"] = hostnames
     hash["database"] = db_name
 
+    hash["prepared_statements"] = !!self.db_prepared_statements
+
     {"production" => hash}
+  end
+
+  def self.redis_config
+    @config ||=
+      begin
+        c = {}
+        c[:host] = redis_host if redis_host
+        c[:port] = redis_port if redis_port
+        c[:password] = redis_password if redis_password.present?
+        c[:db] = redis_db if redis_db != 0
+        c[:db] = 1 if Rails.env == "test"
+        if redis_sentinels.present?
+          c[:sentinels] = redis_sentinels.split(",").map do |address|
+            host,port = address.split(":")
+            {host: host, port: port}
+          end.to_a
+        end
+        c.freeze
+      end
   end
 
 
@@ -63,8 +87,8 @@ class GlobalSetting
     end
 
     def read
-      File.read(@file).split("\n").each do |line|
-        if line =~ /([a-z_]+)\s*=\s*(\"([^\"]*)\"|\'([^\']*)\'|[^#]*)/
+      ERB.new(File.read(@file)).result().split("\n").each do |line|
+        if line =~ /^\s*([a-z_]+[a-z0-9_]*)\s*=\s*(\"([^\"]*)\"|\'([^\']*)\'|[^#]*)/
           @data[$1.strip.to_sym] = ($4 || $3 || $2).strip
         end
       end
@@ -80,13 +104,13 @@ class GlobalSetting
       @data.keys
     end
 
-
-    private
     def self.parse(file)
       provider = self.new(file)
       provider.read
       provider
     end
+
+    private_class_method :parse
   end
 
   class EnvProvider < BaseProvider
@@ -100,15 +124,29 @@ class GlobalSetting
     end
   end
 
+  class BlankProvider < BaseProvider
+    def lookup(key, default)
+      default
+    end
+
+    def keys
+      []
+    end
+  end
+
 
   class << self
     attr_accessor :provider
   end
 
 
-  @provider =
-    FileProvider.from(File.expand_path('../../../config/discourse.conf', __FILE__)) ||
-    EnvProvider.new
+  if Rails.env == "test"
+    @provider = BlankProvider.new
+  else
+    @provider =
+      FileProvider.from(File.expand_path('../../../config/discourse.conf', __FILE__)) ||
+      EnvProvider.new
+  end
 
   load_defaults
 end

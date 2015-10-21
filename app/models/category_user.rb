@@ -6,17 +6,28 @@ class CategoryUser < ActiveRecord::Base
     self.where(user: user, notification_level: notification_levels[level])
   end
 
+  def self.lookup_by_category(user, category)
+    self.where(user: user, category: category)
+  end
+
   # same for now
   def self.notification_levels
     TopicUser.notification_levels
   end
 
-  def self.auto_watch_new_topic(topic)
-    apply_default_to_topic(
-                           topic,
-                           TopicUser.notification_levels[:watching],
-                           TopicUser.notification_reasons[:auto_watch_category]
-                          )
+  %w{watch track}.each do |s|
+    define_singleton_method("auto_#{s}_new_topic") do |topic, new_category=nil|
+      category_id = topic.category_id
+
+      if new_category && topic.created_at > 5.days.ago
+        # we want to apply default of the new category
+        category_id = new_category.id
+        # remove defaults from previous category
+        remove_default_from_topic(topic.id, TopicUser.notification_levels[:"#{s}ing"], TopicUser.notification_reasons[:"auto_#{s}_category"])
+      end
+
+      apply_default_to_topic(topic.id, category_id, TopicUser.notification_levels[:"#{s}ing"], TopicUser.notification_reasons[:"auto_#{s}_category"])
+    end
   end
 
   def self.batch_set(user, level, category_ids)
@@ -35,44 +46,65 @@ class CategoryUser < ActiveRecord::Base
     end
   end
 
-  def self.auto_mute_new_topic(topic)
-    apply_default_to_topic(
-                           topic,
-                           TopicUser.notification_levels[:muted],
-                           TopicUser.notification_reasons[:auto_mute_category]
-                          )
+  def self.set_notification_level_for_category(user, level, category_id)
+    record = CategoryUser.where(user: user, category_id: category_id).first
+
+    if record.present?
+      record.notification_level = level
+      record.save!
+    else
+      CategoryUser.create!(user: user, category_id: category_id, notification_level: level)
+    end
   end
 
-  def notification_level1=(val)
-    val = Symbol === val ? CategoryUser.notification_levels[val] : val
-    attributes[:notification_level] = val
-  end
-
-  def notification_level1
-    attributes[:notification_level]
-  end
-
-  private
-
-  def self.apply_default_to_topic(topic, level, reason)
+  def self.apply_default_to_topic(topic_id, category_id, level, reason)
     # Can not afford to slow down creation of topics when a pile of users are watching new topics, reverting to SQL for max perf here
-    sql = <<SQL
-    INSERT INTO topic_users(user_id, topic_id, notification_level, notifications_reason_id)
-    SELECT user_id, :topic_id, :level, :reason
-    FROM category_users
-    WHERE notification_level = :level AND
-          category_id = :category_id AND
-          NOT EXISTS(SELECT 1 FROM topic_users WHERE topic_id = :topic_id AND user_id = category_users.user_id)
-SQL
+    sql = <<-SQL
+      INSERT INTO topic_users(user_id, topic_id, notification_level, notifications_reason_id)
+           SELECT user_id, :topic_id, :level, :reason
+             FROM category_users
+            WHERE notification_level = :level
+              AND category_id = :category_id
+              AND NOT EXISTS(SELECT 1 FROM topic_users WHERE topic_id = :topic_id AND user_id = category_users.user_id)
+    SQL
 
-    exec_sql(
-        sql,
-                  topic_id: topic.id,
-                  category_id: topic.category_id,
-                  level: level,
-                  reason: reason
-
-            )
+    exec_sql(sql,
+      topic_id: topic_id,
+      category_id: category_id,
+      level: level,
+      reason: reason
+    )
   end
 
+  def self.remove_default_from_topic(topic_id, level, reason)
+    sql = <<-SQL
+      DELETE FROM topic_users
+            WHERE topic_id = :topic_id
+              AND notifications_changed_at IS NULL
+              AND notification_level = :level
+              AND notifications_reason_id = :reason
+    SQL
+
+    exec_sql(sql,
+      topic_id: topic_id,
+      level: level,
+      reason: reason
+    )
+  end
+
+  def self.ensure_consistency!
+    exec_sql("DELETE FROM category_users WHERE user_id NOT IN (SELECT id FROM users)")
+  end
+
+  private_class_method :apply_default_to_topic, :remove_default_from_topic
 end
+
+# == Schema Information
+#
+# Table name: category_users
+#
+#  id                 :integer          not null, primary key
+#  category_id        :integer          not null
+#  user_id            :integer          not null
+#  notification_level :integer          not null
+#

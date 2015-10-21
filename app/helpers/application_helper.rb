@@ -5,11 +5,46 @@ require_dependency 'unread'
 require_dependency 'age_words'
 require_dependency 'configurable_urls'
 require_dependency 'mobile_detection'
+require_dependency 'category_badge'
+require_dependency 'global_path'
+require_dependency 'canonical_url'
 
 module ApplicationHelper
   include CurrentUser
   include CanonicalURL::Helpers
   include ConfigurableUrls
+  include GlobalPath
+
+  def ga_universal_json
+    cookie_domain = SiteSetting.ga_universal_domain_name.gsub(/^http(s)?:\/\//, '')
+    result = {cookieDomain: cookie_domain}
+    if current_user.present?
+      result[:userId] = current_user.id
+    end
+    result.to_json.html_safe
+  end
+
+  def shared_session_key
+    if SiteSetting.long_polling_base_url != '/'.freeze && current_user
+      sk = "shared_session_key"
+      return request.env[sk] if request.env[sk]
+
+      request.env[sk] = key = (session[sk] ||= SecureRandom.hex)
+      $redis.setex "#{sk}_#{key}", 7.days, current_user.id.to_s
+      key
+    end
+  end
+
+  def script(*args)
+    if SiteSetting.enable_cdn_js_debugging && GlobalSetting.cdn_url
+      tags = javascript_include_tag(*args, "crossorigin" => "anonymous")
+      tags.gsub!("/assets/", "/cdn_asset/#{Discourse.current_hostname.gsub(".","_")}/")
+      tags.gsub!(".js\"", ".js?v=1&origin=#{CGI.escape request.base_url}\"")
+      tags.html_safe
+    else
+      javascript_include_tag(*args)
+    end
+  end
 
   def discourse_csrf_tags
     # anon can not have a CSRF token cause these are all pages
@@ -21,7 +56,11 @@ module ApplicationHelper
   end
 
   def html_classes
-    "#{mobile_view? ? 'mobile-view' : 'desktop-view'} #{mobile_device? ? 'mobile-device' : 'not-mobile-device'}"
+    "#{mobile_view? ? 'mobile-view' : 'desktop-view'} #{mobile_device? ? 'mobile-device' : 'not-mobile-device'} #{rtl_class} #{current_user ? '' : 'anon'}"
+  end
+
+  def rtl_class
+    RTL.new(current_user).css_class
   end
 
   def escape_unicode(javascript)
@@ -33,6 +72,10 @@ module ApplicationHelper
     else
       ''
     end
+  end
+
+  def unescape_emoji(title)
+    PrettyText.unescape_emoji(title)
   end
 
   def with_format(format, &block)
@@ -67,42 +110,57 @@ module ApplicationHelper
     current_user.try(:staff?)
   end
 
+  def rtl?
+    ["ar", "fa_IR", "he"].include?(user_locale)
+  end
+
+  def user_locale
+    locale = current_user.locale if current_user && SiteSetting.allow_user_locale
+    # changing back to default shoves a blank string there
+    locale.present? ? locale : SiteSetting.default_locale
+  end
+
   # Creates open graph and twitter card meta data
   def crawlable_meta_data(opts=nil)
-
     opts ||= {}
-    opts[:image] ||= "#{Discourse.base_url}#{SiteSetting.logo_small_url}"
-    opts[:url] ||= "#{Discourse.base_url}#{request.fullpath}"
+    opts[:url] ||= "#{Discourse.base_url_no_prefix}#{request.fullpath}"
+
+    # Use the correct scheme for open graph
+    if opts[:image].present? && opts[:image].start_with?("//")
+      uri = URI(Discourse.base_url)
+      opts[:image] = "#{uri.scheme}:#{opts[:image]}"
+    end
 
     # Add opengraph tags
-    result =  tag(:meta, property: 'og:site_name', content: SiteSetting.title) << "\n"
-
+    result = []
+    result << tag(:meta, property: 'og:site_name', content: SiteSetting.title)
     result << tag(:meta, name: 'twitter:card', content: "summary")
-    [:image, :url, :title, :description, 'image:width', 'image:height'].each do |property|
+
+    [:url, :title, :description, :image].each do |property|
       if opts[property].present?
         escape = (property != :image)
-        result << tag(:meta, {property: "og:#{property}", content: opts[property]}, nil, escape) << "\n"
-        result << tag(:meta, {name: "twitter:#{property}", content: opts[property]}, nil, escape) << "\n"
+        result << tag(:meta, { property: "og:#{property}", content: opts[property] }, nil, escape)
+        result << tag(:meta, { name: "twitter:#{property}", content: opts[property] }, nil, escape)
       end
     end
 
-    # Add workaround tag for old crawlers which ignores <noscript>
-    # (see https://developers.google.com/webmasters/ajax-crawling/docs/specification)
-    result << tag('meta', name: "fragment", content: "!") if SiteSetting.enable_escaped_fragments
-
-    result
+    result.join("\n")
   end
 
   # Look up site content for a key. If the key is blank, you can supply a block and that
   # will be rendered instead.
   def markdown_content(key, replacements=nil)
-    result = PrettyText.cook(SiteContent.content_for(key, replacements || {})).html_safe
+    result = PrettyText.cook(SiteText.text_for(key, replacements || {})).html_safe
     if result.blank? && block_given?
       yield
       nil
     else
       result
     end
+  end
+
+  def application_logo_url
+    @application_logo_url ||= (mobile_view? && SiteSetting.mobile_logo_url) || SiteSetting.logo_url
   end
 
   def login_path
@@ -118,8 +176,33 @@ module ApplicationHelper
   end
 
   def customization_disabled?
-    controller.class.name.split("::").first == "Admin" || session[:disable_customization]
+    session[:disable_customization]
   end
 
+  def loading_admin?
+    controller.class.name.split("::").first == "Admin"
+  end
+
+  def category_badge(category, opts=nil)
+    CategoryBadge.html_for(category, opts).html_safe
+  end
+
+  def self.all_connectors
+    @all_connectors = Dir.glob("plugins/*/app/views/connectors/**/*.html.erb")
+  end
+
+  def server_plugin_outlet(name)
+
+    # Don't evaluate plugins in test
+    return "" if Rails.env.test?
+
+    matcher = Regexp.new("/connectors/#{name}/.*\.html\.erb$")
+    erbs = ApplicationHelper.all_connectors.select {|c| c =~ matcher }
+    return "" if erbs.blank?
+
+    result = ""
+    erbs.each {|erb| result << render(file: erb) }
+    result.html_safe
+  end
 
 end
